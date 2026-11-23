@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment variables
+.env
+.env.local
+
+# Database
+*.db
+*.sqlite
+data/
+*.db-journal
+
+# Testing & Logs
+.pytest_cache/
+*.log
+
+# IDE
+.vscode/
+.idea/
