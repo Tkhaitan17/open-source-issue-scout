@@ -13,6 +13,7 @@ from app.scout.ranker import IssueRanker, ScoredIssue
 from app.coach.investigator import Investigator, InvestigationResult
 from app.coach.patcher import Patcher, PatchPlan
 from app.coach.verifier import Verifier, VerificationReport
+from app.coach.llm_client import LLMClient
 from app.tracker.service import TrackerService
 from app.ui.dashboard import get_dashboard_html
 
@@ -27,6 +28,7 @@ ranker = IssueRanker()
 investigator = Investigator()
 verifier = Verifier()
 tracker = TrackerService(repo)
+llm_client = LLMClient()  # reads GROQ_API_KEY from env automatically
 
 class DecisionPayload(BaseModel):
     issue_id: int
@@ -104,10 +106,11 @@ def scout_issues(language: str = DEFAULT_LANGUAGE, max_candidates: int = 10):
     return shortlist
 
 @app.post("/api/coach/investigate")
-def investigate_issue(issue: IssueItem) -> Dict[str, Any]:
+def investigate_issue(issue: IssueItem, use_llm: bool = True) -> Dict[str, Any]:
     """
     Fix Coach endpoint: inspects candidate files, generates fix plan & patch,
     and runs sandbox verification.
+    Set use_llm=false to use the stub diff instead of calling the LLM.
     """
     import tempfile
     from pathlib import Path
@@ -115,25 +118,53 @@ def investigate_issue(issue: IssueItem) -> Dict[str, Any]:
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_dir = Path(tmpdir) / (issue.repository.split("/")[-1] if "/" in issue.repository else "repo")
         repo_dir.mkdir(exist_ok=True)
-        
-        # In a real environment with Git, we clone:
-        # repo_dir = investigator.clone_repository(issue.repository, Path(tmpdir))
-        # For fast local POC demonstration without full remote clone overhead:
+
         inv_result = investigator.investigate(issue, repo_dir)
-        
-        # Simulated patch and verification
+
+        # --- LLM-generated diff (Phase 2) ---
+        llm_diff = ""
+        llm_summary = ""
+        if use_llm and llm_client.is_available() and inv_result.relevant_files:
+            # Try to summarise the issue first
+            llm_summary = llm_client.summarise_issue(issue.title, getattr(issue, "body", ""))
+            # Generate a diff using the first relevant file name as context
+            llm_diff = llm_client.generate_fix(
+                issue_title=issue.title,
+                issue_body=getattr(issue, "body", ""),
+                file_path=inv_result.relevant_files[0],
+                file_content=f"# Source file: {inv_result.relevant_files[0]}\n# (file content unavailable in POC – LLM uses issue context only)\n",
+            )
+
+        # --- Fallback stub diff if LLM unavailable or produced nothing ---
+        if not llm_diff:
+            llm_diff = (
+                f"--- a/core.py\n+++ b/core.py\n"
+                f"@@ -10,3 +10,4 @@\n def execute():\n"
+                f"+    # Defensive validation added by Fix Coach\n     pass\n"
+            )
+
         plan = PatchPlan(
-            summary=f"Fix identified issue in {issue.repository}",
+            summary=llm_summary or f"Fix identified issue in {issue.repository}",
             steps=["Locate edge-case handling in primary module", "Add defensive check and tests"],
-            diff_content=f"--- a/core.py\n+++ b/core.py\n@@ -10,3 +10,4 @@\n def execute():\n+    # Defensive validation\n     pass\n"
+            diff_content=llm_diff,
         )
         report = verifier.verify(inv_result, patch_plan=plan)
 
         return {
             "investigation": inv_result.dict(),
             "patch_plan": plan.dict(),
-            "verification": report.dict()
+            "verification": report.dict(),
+            "llm_used": use_llm and llm_client.is_available(),
         }
+
+@app.get("/api/llm/status")
+def llm_status():
+    """Reports whether the LLM is configured and which model is active."""
+    return {
+        "available": llm_client.is_available(),
+        "model": llm_client.model,
+        "provider": "Groq",
+    }
 
 @app.post("/api/tracker/decision")
 def record_decision(payload: DecisionPayload):

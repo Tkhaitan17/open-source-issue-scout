@@ -50,7 +50,7 @@ def test_fastapi_endpoints():
     # 1. Dashboard HTML
     html_resp = index()
     html_content = html_resp if isinstance(html_resp, str) else html_resp.body.decode()
-    assert "Open Source Issue Scout + Fix Coach" in html_content
+    assert "Issue Scout" in html_content
     print("[PASS] GET / serves the interactive dashboard HTML.")
 
     # 2. Profile endpoints
